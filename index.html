@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>4 Ortaklı Finans & Yatırım Takip</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, doc, setDoc, onSnapshot, runTransaction, getDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    window.__FIREBASE_SDK__ = { initializeApp, getFirestore, doc, setDoc, onSnapshot, runTransaction, getDoc, getAuth, signInAnonymously, onAuthStateChanged };
+    window.dispatchEvent(new Event("firebase-sdk-ready"));
+  </script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen pb-24">
+  <div id="app"></div>
+
+  <script>
+    const STORAGE_KEY = "ortak_finans_app_v1";
+    const todayStr = () => new Date().toISOString().slice(0, 10);
+    const currentMonthStr = () => new Date().toISOString().slice(0, 7);
+
+    const DEFAULT_DATA = {
+      partners: [
+        { id: "Ortak 1", name: "1. Ortak", role: "Kasa & Operasyon", initialInvestment: 250000 },
+        { id: "Ortak 2", name: "2. Ortak", role: "Tedarik & Stok", initialInvestment: 250000 },
+        { id: "Ortak 3", name: "3. Ortak", role: "Finans & Vergi", initialInvestment: 250000 },
+        { id: "Ortak 4", name: "4. Ortak", role: "Saha & Gider Kontrol", initialInvestment: 250000 },
+      ],
+      revenues: [
+        { id: "r1", date: offsetDate(-6), channel: "Kredi Kartı / POS", desc: "Haftalık başlangıç cirosu", partner: "Ortak 1", amount: 24500 },
+        { id: "r2", date: offsetDate(-5), channel: "Nakit", desc: "Günlük kasa cirosu", partner: "Ortak 2", amount: 21800 },
+        { id: "r3", date: offsetDate(-4), channel: "Online Sipariş", desc: "Günlük sipariş cirosu", partner: "Ortak 3", amount: 28900 },
+        { id: "r4", date: offsetDate(-3), channel: "Kredi Kartı / POS", desc: "Günlük ciro girişi", partner: "Ortak 4", amount: 26400 },
+        { id: "r5", date: offsetDate(-2), channel: "Kredi Kartı / POS", desc: "Günlük ciro girişi", partner: "Ortak 1", amount: 31200 },
+        { id: "r6", date: offsetDate(-1), channel: "Online Sipariş", desc: "Cuma ciro girişi", partner: "Ortak 2", amount: 36500 },
+        { id: "r7", date: todayStr(), channel: "Kredi Kartı / POS", desc: "Bugünkü ciro girişi", partner: "Ortak 3", amount: 39400 },
+      ],
+      expenses: [
+        { id: "e1", date: offsetDate(-4), category: "Tedarikçi ve Malzeme", desc: "Haftalık malzeme alımı", partner: "Ortak 2", amount: 14500 },
+        { id: "e2", date: offsetDate(-2), category: "Faturalar", desc: "Elektrik, su ve internet", partner: "Ortak 1", amount: 6800 },
+        { id: "e3", date: todayStr(), category: "Personel ve SGK", desc: "Personel avans/ödemesi", partner: "Ortak 3", amount: 12000 },
+      ],
+      scheduledPayments: [
+        { id: "p1", dueDate: offsetDate(2), title: "Ana Tedarikçi Vadeli Ödeme", category: "Tedarikçi ve Malzeme", partner: "Ortak 1", amount: 25000, status: "Bekliyor" },
+        { id: "p2", dueDate: offsetDate(5), title: "İşyeri Kira Ödemesi", category: "Kira ve Aidat", partner: "Ortak 2", amount: 42000, status: "Bekliyor" },
+        { id: "p3", dueDate: offsetDate(8), title: "KDV / Muhtasar Ödemesi", category: "Vergi ve Muhasebe", partner: "Ortak 3", amount: 15600, status: "Bekliyor" },
+      ],
+      capitalMovements: [
+        { id: "c1", date: offsetDate(-10), partner: "Ortak 1", type: "Yatırım / Ek Harcama (+)", desc: "İşyeri tadilat ek harcaması", amount: 35000 },
+        { id: "c2", date: offsetDate(-7), partner: "Ortak 2", type: "Yatırım / Ek Harcama (+)", desc: "Ekipman alımı", amount: 22500 },
+        { id: "c3", date: offsetDate(-2), partner: "Ortak 1", type: "Kâr Ödemesi (-)", desc: "Şirket kâr ödemesi", amount: 30000 },
+        { id: "c4", date: offsetDate(-2), partner: "Ortak 2", type: "Kâr Ödemesi (-)", desc: "Şirket kâr ödemesi", amount: 30000 },
+      ],
+      cloudConfig: {
+        roomId: "sirket-odasi-01",
+        firebaseJson: ""
+      }
+    };
+
+    function offsetDate(days) {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return d.toISOString().slice(0, 10);
+    }
+
+    function fmtTL(n) {
+      const val = Number(n) || 0;
+      return val.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺";
+    }
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return structuredClone(DEFAULT_DATA);
+        const parsed = JSON.parse(raw);
+        return {
+          ...structuredClone(DEFAULT_DATA),
+          ...parsed,
+          partners: parsed.partners?.length === 4 ? parsed.partners : structuredClone(DEFAULT_DATA.partners),
+          cloudConfig: { ...structuredClone(DEFAULT_DATA.cloudConfig), ...(parsed.cloudConfig || {}) }
+        };
+      } catch {
+        return structuredClone(DEFAULT_DATA);
+      }
+    }
+
+    let state = loadState();
+    let activePartner = localStorage.getItem("ortak_finans_active_partner") || "Ortak 1";
+    let activeTab = "rapor";
+    let reportDate = todayStr();
+    let reportMonth = currentMonthStr();
+    let syncStatus = "Yerel Mod";
+    let cloudUnsub = null;
+    let cloudApp = null;
+    let cloudDb = null;
+    let cloudAuth = null;
+    let cloudRoomRef = null;
+    let cloudConnecting = false;
+    let chartWeekly = null;
+    let chartMonthlyWeeks = null;
+
+    function saveLocal() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem("ortak_finans_active_partner", activePartner);
+    }
+
+    function cloudPayload(source) {
+      return {
+        partners: source.partners || [],
+        revenues: source.revenues || [],
+        expenses: source.expenses || [],
+        scheduledPayments: source.scheduledPayments || [],
+        capitalMovements: source.capitalMovements || [],
+        updatedAt: new Date().toISOString()
+      };
+    }
+
+    function applyCloudData(data) {
+      state = {
+        ...state,
+        partners: Array.isArray(data.partners) && data.partners.length === 4 ? data.partners : state.partners,
+        revenues: Array.isArray(data.revenues) ? data.revenues : [],
+        expenses: Array.isArray(data.expenses) ? data.expenses : [],
+        scheduledPayments: Array.isArray(data.scheduledPayments) ? data.scheduledPayments : [],
+        capitalMovements: Array.isArray(data.capitalMovements) ? data.capitalMovements : []
+      };
+      saveLocal();
+    }
+
+    async function connectCloudListener() {
+      if (cloudConnecting) return;
+      if (typeof cloudUnsub === "function") {
+        cloudUnsub();
+        cloudUnsub = null;
+      }
+      cloudDb = null;
+      cloudRoomRef = null;
+      const cfgText = (state.cloudConfig?.firebaseJson || "").trim();
+      const roomId = (state.cloudConfig?.roomId || "sirket-odasi-01").trim();
+      if (!cfgText || !window.__FIREBASE_SDK__) {
+        syncStatus = "Yerel Depolama (Oda: " + roomId + ")";
+        render();
+        return;
+      }
+
+      cloudConnecting = true;
+      syncStatus = "Buluta bağlanılıyor...";
+      render();
+      try {
+        const cfg = JSON.parse(cfgText);
+        const sdk = window.__FIREBASE_SDK__;
+        // Aynı Firebase uygulamasını kullan: ayrı app/auth örnekleri oturum çakışmasına yol açabilir.
+        cloudApp = sdk.initializeApp(cfg, "ortak_finans_shared");
+        cloudDb = sdk.getFirestore(cloudApp);
+        cloudAuth = sdk.getAuth(cloudApp);
+        if (!cloudAuth.currentUser) await sdk.signInAnonymously(cloudAuth);
+        cloudRoomRef = sdk.doc(cloudDb, "rooms", roomId);
+
+        const firstRead = await sdk.getDoc(cloudRoomRef);
+        if (firstRead.exists()) {
+          applyCloudData(firstRead.data());
+          syncStatus = "Bulut bağlı · " + roomId;
+        } else {
+          // İlk bağlantıda bu cihazdaki mevcut kayıtları ilk bulut verisi olarak aktar.
+          await sdk.setDoc(cloudRoomRef, cloudPayload(state));
+          syncStatus = "İlk kayıtlar buluta aktarıldı · " + roomId;
+        }
+
+        cloudUnsub = sdk.onSnapshot(cloudRoomRef, (snap) => {
+          if (snap.exists()) {
+            applyCloudData(snap.data());
+            syncStatus = "Canlı Bulut · " + roomId;
+            render();
+          }
+        }, (err) => {
+          syncStatus = "Bulut dinleme hatası: " + (err.message || "Bağlantı sorunu");
+          render();
+        });
+      } catch (err) {
+        cloudDb = null;
+        cloudRoomRef = null;
+        syncStatus = "Bulut bağlantı hatası: " + (err.message || "Ayarları kontrol edin");
+      } finally {
+        cloudConnecting = false;
+        render();
+      }
+    }
+
+    async function updateAndSync(mutator) {
+      // Bulut bağlıysa son sunucu verisini transaction içinde okuyup değiştir.
+      // Böylece farklı cihazlardan eş zamanlı eklenen kayıtların birbirini ezme riski azalır.
+      if (cloudDb && cloudRoomRef && cloudAuth?.currentUser) {
+        try {
+          syncStatus = "Buluta kaydediliyor...";
+          render();
+          const sdk = window.__FIREBASE_SDK__;
+          let committedNext = null;
+          await sdk.runTransaction(cloudDb, async (transaction) => {
+            const snap = await transaction.get(cloudRoomRef);
+            const latest = snap.exists() ? snap.data() : cloudPayload(state);
+            const next = {
+              ...state,
+              partners: latest.partners || state.partners,
+              revenues: latest.revenues || [],
+              expenses: latest.expenses || [],
+              scheduledPayments: latest.scheduledPayments || [],
+              capitalMovements: latest.capitalMovements || []
+            };
+            mutator(next);
+            committedNext = next;
+            transaction.set(cloudRoomRef, cloudPayload(next));
+          });
+          if (committedNext) state = committedNext;
+          saveLocal();
+          syncStatus = "Bulut senkronize";
+          render();
+          return;
+        } catch (err) {
+          // Bağlantı/kural hatasında kullanıcının işlemini en azından bu cihazda kaybetme.
+          mutator(state);
+          syncStatus = "Bulut kayıt hatası · Yerel kaydedildi: " + (err.message || "Bağlantıyı kontrol edin");
+        }
+      } else {
+        mutator(state);
+        syncStatus = "Yerel Mod · Bulut bağlı değil";
+      }
+      saveLocal();
+      render();
+    }
+
+    function getPartnerDisplayName(partnerId) {
+      const p = state.partners.find(x => x.id === partnerId);
+      return p ? `${p.name} (${p.id})` : partnerId;
+    }
+
+    function computeReport() {
+      const refD = new Date(reportDate + "T12:00:00");
+      const dailyRev = state.revenues
+        .filter(r => r.date === reportDate)
+        .reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+      const weekDays = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(refD);
+        d.setDate(refD.getDate() - i);
+        const iso = d.toISOString().slice(0, 10);
+        const dayLabel = d.toLocaleDateString("tr-TR", { weekday: "short", day: "2-digit", month: "2-digit" });
+        const amt = state.revenues
+          .filter(r => r.date === iso)
+          .reduce((s, r) => s + (Number(r.amount) || 0), 0);
+        weekDays.push({ iso, dayLabel, amt });
+      }
+      const weeklyRev = weekDays.reduce((s, x) => s + x.amt, 0);
+
+      const monthRevs = state.revenues.filter(r => (r.date || "").startsWith(reportMonth));
+      const monthExps = state.expenses.filter(e => (e.date || "").startsWith(reportMonth));
+      const monthlyRev = monthRevs.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+      const monthlyExp = monthExps.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+      const netDiff = monthlyRev - monthlyExp;
+
+      // Weeks of selected month (1..5)
+      const [yStr, mStr] = reportMonth.split("-");
+      const year = Number(yStr) || new Date().getFullYear();
+      const monthIdx = (Number(mStr) || 1) - 1;
+      const lastDay = new Date(year, monthIdx + 1, 0).getDate();
+      const weekBuckets = [
+        { label: "1. Hafta (1-7)", start: 1, end: Math.min(7, lastDay), total: 0 },
+        { label: "2. Hafta (8-14)", start: 8, end: Math.min(14, lastDay), total: 0 },
+        { label: "3. Hafta (15-21)", start: 15, end: Math.min(21, lastDay), total: 0 },
+        { label: "4. Hafta (22-28)", start: 22, end: Math.min(28, lastDay), total: 0 },
+      ];
+      if (lastDay >= 29) {
+        weekBuckets.push({ label: `5. Hafta (29-${lastDay})`, start: 29, end: lastDay, total: 0 });
+      }
+      monthRevs.forEach(r => {
+        const dayNum = Number((r.date || "").slice(8, 10));
+        const b = weekBuckets.find(w => dayNum >= w.start && dayNum <= w.end);
+        if (b) b.total += (Number(r.amount) || 0);
+      });
+
+      const upcomingPayments = [...state.scheduledPayments]
+        .sort((a, b) => (a.dueDate || "").localeCompare(b.dueDate || ""));
+
+      return { dailyRev, weeklyRev, monthlyRev, monthlyExp, netDiff, weekDays, monthExps, weekBuckets, upcomingPayments };
+    }
+
+    function computePartnerInvestments() {
+      return state.partners.map(p => {
+        const base = Number(p.initialInvestment) || 0;
+        const extra = state.capitalMovements
+          .filter(m => m.partner === p.id && m.type === "Yatırım / Ek Harcama (+)")
+          .reduce((s, m) => s + (Number(m.amount) || 0), 0);
+        const profitPaid = state.capitalMovements
+          .filter(m => m.partner === p.id && m.type === "Kâr Ödemesi (-)")
+          .reduce((s, m) => s + (Number(m.amount) || 0), 0);
+        const totalInvested = base + extra;
+        const remainingBalance = totalInvested - profitPaid;
+        return { ...p, base, extra, totalInvested, profitPaid, remainingBalance };
+      });
+    }
+
+    function renderCharts(rep) {
+      const c1 = document.getElementById("chartWeeklyDaily");
+      const c2 = document.getElementById("chartMonthWeeks");
+      if (chartWeekly) { chartWeekly.destroy(); chartWeekly = null; }
+      if (chartMonthlyWeeks) { chartMonthlyWeeks.destroy(); chartMonthlyWeeks = null; }
+
+      if (c1) {
+        chartWeekly = new Chart(c1, {
+          type: "bar",
+          data: {
+            labels: rep.weekDays.map(d => d.dayLabel),
+            datasets: [{
+              label: "Günlük Ciro (₺)",
+              data: rep.weekDays.map(d => d.amt),
+              backgroundColor: "#0f766e",
+              borderRadius: 6
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true } }
+          }
+        });
+      }
+
+      if (c2) {
+        chartMonthlyWeeks = new Chart(c2, {
+          type: "bar",
+          data: {
+            labels: rep.weekBuckets.map(w => w.label),
+            datasets: [{
+              label: "Haftalık Toplam Gelir (₺)",
+              data: rep.weekBuckets.map(w => w.total),
+              backgroundColor: "#1e293b",
+              borderRadius: 6
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true } }
+          }
+        });
+      }
+    }
+
+    function render() {
+      const rep = computeReport();
+      const invs = computePartnerInvestments();
+
+      document.getElementById("app").innerHTML = `
+        <header class="bg-slate-900 text-white sticky top-0 z-20 shadow">
+          <div class="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h1 class="text-base sm:text-lg font-bold tracking-tight">4 Ortaklı Finans & Yatırım Takip</h1>
+              <p class="text-xs text-slate-300">${syncStatus}</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-slate-300">Aktif Ortak:</label>
+              <select id="activePartnerSel" class="bg-slate-800 border border-slate-700 text-white text-xs sm:text-sm rounded-lg px-2.5 py-1.5">
+                ${state.partners.map(p => `<option value="${p.id}" ${activePartner === p.id ? "selected" : ""}>${p.name} (${p.id})</option>`).join("")}
+              </select>
+            </div>
+          </div>
+
+          <nav class="bg-slate-800/90 border-t border-slate-700 overflow-x-auto">
+            <div class="max-w-6xl mx-auto px-4 flex gap-1 text-xs sm:text-sm font-medium">
+              ${[
+                ["rapor", "Rapor Ekranı"],
+                ["ciro", "Ciro Girişi"],
+                ["gider", "Gider Girişi"],
+                ["odeme", "İleri Tarihli Ödeme"],
+                ["yatirim", "Yatırım & Kâr"],
+                ["ortaklar", "Ortaklar & Bulut"]
+              ].map(([key, label]) => `
+                <button data-tab="${key}" class="tab-btn whitespace-nowrap px-3 py-2.5 border-b-2 transition ${activeTab === key ? "border-teal-400 text-white bg-slate-900/50" : "border-transparent text-slate-300 hover:text-white"}">${label}</button>
+              `).join("")}
+            </div>
+          </nav>
+        </header>
+
+        <main class="max-w-6xl mx-auto px-4 py-5 space-y-5">
+          ${activeTab === "rapor" ? renderRaporTab(rep) : ""}
+          ${activeTab === "ciro" ? renderCiroTab() : ""}
+          ${activeTab === "gider" ? renderGiderTab() : ""}
+          ${activeTab === "odeme" ? renderOdemeTab() : ""}
+          ${activeTab === "yatirim" ? renderYatirimTab(invs) : ""}
+          ${activeTab === "ortaklar" ? renderOrtaklarTab(invs) : ""}
+        </main>
+      `;
+
+      bindEvents();
+      if (activeTab === "rapor") renderCharts(rep);
+    }
+
+    function renderRaporTab(rep) {
+      return `
+        <div class="bg-white rounded-xl border border-slate-200 p-4 flex flex-wrap items-center gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">Referans Gün (Günlük & Son 7 Gün)</label>
+            <input id="repDateInput" type="date" value="${reportDate}" class="border border-slate-300 rounded-lg px-3 py-1.5 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">Rapor Ayı (Aylık Gelir/Gider & Haftalar)</label>
+            <input id="repMonthInput" type="month" value="${reportMonth}" class="border border-slate-300 rounded-lg px-3 py-1.5 text-sm" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <div class="text-xs font-semibold text-slate-500">TOPLAM GELİR (${reportMonth})</div>
+            <div class="text-2xl font-bold text-teal-700 mt-1 tabular-nums">${fmtTL(rep.monthlyRev)}</div>
+            <div class="text-xs text-slate-500 mt-2">Günlük: <b>${fmtTL(rep.dailyRev)}</b> • Son 7 Gün: <b>${fmtTL(rep.weeklyRev)}</b></div>
+          </div>
+          <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <div class="text-xs font-semibold text-slate-500">TOPLAM GİDER (${reportMonth})</div>
+            <div class="text-2xl font-bold text-rose-700 mt-1 tabular-nums">${fmtTL(rep.monthlyExp)}</div>
+            <div class="text-xs text-slate-500 mt-2">Seçili ay gider kayıtları toplamı</div>
+          </div>
+          <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <div class="text-xs font-semibold text-slate-500">ARADAKİ FARK (NET)</div>
+            <div class="text-2xl font-bold mt-1 tabular-nums ${rep.netDiff >= 0 ? "text-emerald-700" : "text-red-700"}">${fmtTL(rep.netDiff)}</div>
+            <div class="text-xs text-slate-500 mt-2">Toplam Gelir − Toplam Gider</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <h2 class="text-sm font-bold text-slate-800 mb-3">Haftalık Ciro (Günlük Bar Grafiği)</h2>
+            <div class="h-60"><canvas id="chartWeeklyDaily"></canvas></div>
+          </div>
+          <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <h2 class="text-sm font-bold text-slate-800 mb-3">Ayın Haftalarına Göre Toplam Gelir (Bar Grafiği)</h2>
+            <div class="h-60"><canvas id="chartMonthWeeks"></canvas></div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <h2 class="text-sm font-bold text-slate-800 mb-3">Giderler (${reportMonth})</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs sm:text-sm text-left">
+                <thead class="bg-slate-100 text-slate-600">
+                  <tr>
+                    <th class="p-2">Tarih</th>
+                    <th class="p-2">Kategori / Açıklama</th>
+                    <th class="p-2">Ortak</th>
+                    <th class="p-2 text-right">Tutar</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                  ${rep.monthExps.length ? rep.monthExps.map(e => `
+                    <tr>
+                      <td class="p-2 whitespace-nowrap">${e.date}</td>
+                      <td class="p-2"><b>${e.category}</b> — ${e.desc || ""}</td>
+                      <td class="p-2 whitespace-nowrap">${e.partner}</td>
+                      <td class="p-2 text-right font-semibold text-rose-700 tabular-nums">${fmtTL(e.amount)}</td>
+                    </tr>
+                  `).join("") : `<tr><td colspan="4" class="p-4 text-center text-slate-400">Bu ayda gider kaydı yok.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <h2 class="text-sm font-bold text-slate-800 mb-3">İleri Tarihli Ödemeler (Hangi Tarihte Ödeme Yapılacak)</h2>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs sm:text-sm text-left">
+                <thead class="bg-slate-100 text-slate-600">
+                  <tr>
+                    <th class="p-2">Ödeme Tarihi</th>
+                    <th class="p-2">Açıklama</th>
+                    <th class="p-2">Durum</th>
+                    <th class="p-2 text-right">Tutar</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                  ${rep.upcomingPayments.length ? rep.upcomingPayments.map(p => `
+                    <tr>
+                      <td class="p-2 whitespace-nowrap font-semibold">${p.dueDate}</td>
+                      <td class="p-2">${p.title} <span class="text-xs text-slate-500">(${p.partner})</span></td>
+                      <td class="p-2"><span class="px-2 py-0.5 rounded text-xs ${p.status === "Ödendi" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}">${p.status}</span></td>
+                      <td class="p-2 text-right font-semibold tabular-nums">${fmtTL(p.amount)}</td>
+                    </tr>
+                  `).join("") : `<tr><td colspan="4" class="p-4 text-center text-slate-400">Planlı ödeme yok.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCiroTab() {
+      return `
+        <form id="revForm" class="bg-white rounded-xl border border-slate-200 p-4 grid grid-cols-1 sm:grid-cols-5 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Tarih</label>
+            <input name="date" type="date" value="${todayStr()}" required class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Kanal</label>
+            <select name="channel" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm">
+              <option>Kredi Kartı / POS</option>
+              <option>Nakit</option>
+              <option>Online Sipariş</option>
+              <option>Havale / EFT</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Açıklama</label>
+            <input name="desc" type="text" placeholder="Günlük ciro notu" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Tutar (₺)</label>
+            <input name="amount" type="number" step="0.01" required placeholder="0.00" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div class="flex items-end">
+            <button type="submit" class="w-full bg-teal-700 hover:bg-teal-800 text-white font-semibold rounded-lg px-4 py-2 text-sm">Ciro Ekle</button>
+          </div>
+        </form>
+
+        <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table class="w-full text-xs sm:text-sm text-left">
+            <thead class="bg-slate-100 text-slate-700">
+              <tr><th class="p-3">Tarih</th><th class="p-3">Kanal</th><th class="p-3">Açıklama</th><th class="p-3">Giren Ortak</th><th class="p-3 text-right">Tutar</th><th class="p-3"></th></tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              ${[...state.revenues].reverse().map(r => `
+                <tr>
+                  <td class="p-3 whitespace-nowrap">${r.date}</td>
+                  <td class="p-3 whitespace-nowrap">${r.channel}</td>
+                  <td class="p-3">${r.desc || "-"}</td>
+                  <td class="p-3 whitespace-nowrap">${r.partner}</td>
+                  <td class="p-3 text-right font-bold text-teal-700 tabular-nums">${fmtTL(r.amount)}</td>
+                  <td class="p-3 text-right"><button data-del-rev="${r.id}" class="text-rose-600 hover:underline text-xs">Sil</button></td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderGiderTab() {
+      return `
+        <form id="expForm" class="bg-white rounded-xl border border-slate-200 p-4 grid grid-cols-1 sm:grid-cols-5 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Tarih</label>
+            <input name="date" type="date" value="${todayStr()}" required class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Kategori</label>
+            <select name="category" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm">
+              <option>Tedarikçi ve Malzeme</option>
+              <option>Kira ve Aidat</option>
+              <option>Personel ve SGK</option>
+              <option>Faturalar</option>
+              <option>Vergi ve Muhasebe</option>
+              <option>Diğer Giderler</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Açıklama</label>
+            <input name="desc" type="text" placeholder="Gider detayı" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Tutar (₺)</label>
+            <input name="amount" type="number" step="0.01" required placeholder="0.00" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div class="flex items-end">
+            <button type="submit" class="w-full bg-rose-700 hover:bg-rose-800 text-white font-semibold rounded-lg px-4 py-2 text-sm">Gider Ekle</button>
+          </div>
+        </form>
+
+        <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table class="w-full text-xs sm:text-sm text-left">
+            <thead class="bg-slate-100 text-slate-700">
+              <tr><th class="p-3">Tarih</th><th class="p-3">Kategori</th><th class="p-3">Açıklama</th><th class="p-3">Giren Ortak</th><th class="p-3 text-right">Tutar</th><th class="p-3"></th></tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              ${[...state.expenses].reverse().map(e => `
+                <tr>
+                  <td class="p-3 whitespace-nowrap">${e.date}</td>
+                  <td class="p-3 whitespace-nowrap">${e.category}</td>
+                  <td class="p-3">${e.desc || "-"}</td>
+                  <td class="p-3 whitespace-nowrap">${e.partner}</td>
+                  <td class="p-3 text-right font-bold text-rose-700 tabular-nums">${fmtTL(e.amount)}</td>
+                  <td class="p-3 text-right"><button data-del-exp="${e.id}" class="text-rose-600 hover:underline text-xs">Sil</button></td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderOdemeTab() {
+      return `
+        <form id="payForm" class="bg-white rounded-xl border border-slate-200 p-4 grid grid-cols-1 sm:grid-cols-5 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Ödeme Tarihi</label>
+            <input name="dueDate" type="date" value="${offsetDate(3)}" required class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Kategori</label>
+            <select name="category" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm">
+              <option>Tedarikçi ve Malzeme</option>
+              <option>Kira ve Aidat</option>
+              <option>Vergi ve Muhasebe</option>
+              <option>Personel ve SGK</option>
+              <option>Diğer</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Kurum / Açıklama</label>
+            <input name="title" type="text" required placeholder="Örn: Kira / Çek ödemesi" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Tutar (₺)</label>
+            <input name="amount" type="number" step="0.01" required placeholder="0.00" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div class="flex items-end">
+            <button type="submit" class="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-lg px-4 py-2 text-sm">Ödeme Planla</button>
+          </div>
+        </form>
+
+        <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table class="w-full text-xs sm:text-sm text-left">
+            <thead class="bg-slate-100 text-slate-700">
+              <tr><th class="p-3">Tarih</th><th class="p-3">Açıklama</th><th class="p-3">Ortak</th><th class="p-3 text-right">Tutar</th><th class="p-3">Durum</th><th class="p-3 text-right">İşlem</th></tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              ${state.scheduledPayments.map(p => `
+                <tr>
+                  <td class="p-3 whitespace-nowrap font-semibold">${p.dueDate}</td>
+                  <td class="p-3">${p.title} <span class="text-xs text-slate-500">(${p.category})</span></td>
+                  <td class="p-3 whitespace-nowrap">${p.partner}</td>
+                  <td class="p-3 text-right font-bold tabular-nums">${fmtTL(p.amount)}</td>
+                  <td class="p-3"><span class="px-2 py-0.5 rounded text-xs ${p.status === "Ödendi" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}">${p.status}</span></td>
+                  <td class="p-3 text-right space-x-2 whitespace-nowrap">
+                    ${p.status !== "Ödendi" ? `<button data-mark-paid="${p.id}" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-2.5 py-1 rounded">Ödendi & Gidere Aktar</button>` : ""}
+                    <button data-del-pay="${p.id}" class="text-rose-600 hover:underline text-xs">Sil</button>
+                  </td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderYatirimTab(invs) {
+      return `
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          ${invs.map(p => `
+            <div class="bg-white rounded-xl border border-slate-200 p-4 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="font-bold text-slate-900">${p.name}</span>
+                <span class="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600">${p.id}</span>
+              </div>
+              <div class="text-xs text-slate-500 flex justify-between"><span>Başlangıç Yatırımı:</span><b class="tabular-nums">${fmtTL(p.base)}</b></div>
+              <div class="text-xs text-slate-500 flex justify-between"><span>Ek Harcama / Yatırım (+):</span><b class="text-amber-700 tabular-nums">+${fmtTL(p.extra)}</b></div>
+              <div class="text-xs text-slate-700 flex justify-between border-t pt-1"><span>Toplam Yatırılan:</span><b class="tabular-nums">${fmtTL(p.totalInvested)}</b></div>
+              <div class="text-xs text-slate-500 flex justify-between"><span>Alınan Kâr Ödemesi (-):</span><b class="text-emerald-700 tabular-nums">-${fmtTL(p.profitPaid)}</b></div>
+              <div class="pt-2 border-t flex justify-between items-baseline">
+                <span class="text-xs font-semibold text-slate-600">Kalan Yatırım:</span>
+                <span class="text-base font-bold text-slate-900 tabular-nums">${fmtTL(p.remainingBalance)}</span>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+
+        <form id="capForm" class="bg-white rounded-xl border border-slate-200 p-4 grid grid-cols-1 sm:grid-cols-6 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Tarih</label>
+            <input name="date" type="date" value="${todayStr()}" required class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Ortak</label>
+            <select name="partner" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm">
+              ${state.partners.map(p => `<option value="${p.id}" ${activePartner === p.id ? "selected" : ""}>${p.name} (${p.id})</option>`).join("")}
+              <option value="ALL_4">4 Ortağa Eşit Böl</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">İşlem Türü</label>
+            <select name="type" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm">
+              <option value="Yatırım / Ek Harcama (+)">Yatırım / Ek Harcama (+)</option>
+              <option value="Kâr Ödemesi (-)">Kâr Ödemesi (-)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Açıklama</label>
+            <input name="desc" type="text" placeholder="Harcama veya kâr ödemesi" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">Tutar (₺)</label>
+            <input name="amount" type="number" step="0.01" required placeholder="0.00" class="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm" />
+          </div>
+          <div class="flex items-end">
+            <button type="submit" class="w-full bg-teal-700 hover:bg-teal-800 text-white font-semibold rounded-lg px-3 py-2 text-sm">Kaydet</button>
+          </div>
+        </form>
+
+        <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <table class="w-full text-xs sm:text-sm text-left">
+            <thead class="bg-slate-100 text-slate-700">
+              <tr><th class="p-3">Tarih</th><th class="p-3">Ortak</th><th class="p-3">İşlem Türü</th><th class="p-3">Açıklama</th><th class="p-3 text-right">Tutar</th><th class="p-3"></th></tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              ${[...state.capitalMovements].reverse().map(m => `
+                <tr>
+                  <td class="p-3 whitespace-nowrap">${m.date}</td>
+                  <td class="p-3 whitespace-nowrap">${m.partner}</td>
+                  <td class="p-3 whitespace-nowrap"><span class="px-2 py-0.5 rounded text-xs font-semibold ${m.type.includes("+") ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}">${m.type}</span></td>
+                  <td class="p-3">${m.desc || "-"}</td>
+                  <td class="p-3 text-right font-bold tabular-nums">${fmtTL(m.amount)}</td>
+                  <td class="p-3 text-right"><button data-del-cap="${m.id}" class="text-rose-600 hover:underline text-xs">Sil</button></td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderOrtaklarTab(invs) {
+      return `
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+            <h2 class="text-sm font-bold text-slate-800">4 Ortak Bilgileri ve Başlangıç Yatırımı</h2>
+            ${invs.map((p, idx) => `
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center border-b border-slate-100 pb-2">
+                <input data-p-idx="${idx}" data-p-field="name" type="text" value="${p.name}" class="p-edit border border-slate-300 rounded px-2.5 py-1.5 text-sm" />
+                <input data-p-idx="${idx}" data-p-field="role" type="text" value="${p.role}" class="p-edit border border-slate-300 rounded px-2.5 py-1.5 text-sm" />
+                <input data-p-idx="${idx}" data-p-field="initialInvestment" type="number" step="0.01" value="${p.initialInvestment}" class="p-edit border border-slate-300 rounded px-2.5 py-1.5 text-sm" />
+              </div>
+            `).join("")}
+          </div>
+
+          <div class="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+            <h2 class="text-sm font-bold text-slate-800">Ortak Bulut Oda Kodu & Firebase Ayarı</h2>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Ortak Oda Kodu (4 Ortak Aynı Kodu Kullanmalı)</label>
+              <input id="roomIdInput" type="text" value="${state.cloudConfig.roomId || "sirket-odasi-01"}" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 mb-1">Firebase Config JSON (İsteğe Bağlı Canlı Bulut)</label>
+              <textarea id="fbJsonInput" rows="4" placeholder='{"apiKey":"...","authDomain":"...","projectId":"..."}' class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono">${state.cloudConfig.firebaseJson || ""}</textarea>
+            </div>
+            <button id="saveCloudBtn" type="button" class="bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-lg px-4 py-2 text-sm">Ayarları Kaydet ve Bağlan</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function bindEvents() {
+      const sel = document.getElementById("activePartnerSel");
+      if (sel) sel.addEventListener("change", e => { activePartner = e.target.value; saveLocal(); });
+
+      document.querySelectorAll(".tab-btn").forEach(btn => {
+        btn.addEventListener("click", () => { activeTab = btn.dataset.tab; render(); });
+      });
+
+      const dInp = document.getElementById("repDateInput");
+      if (dInp) dInp.addEventListener("change", e => { reportDate = e.target.value || todayStr(); render(); });
+
+      const mInp = document.getElementById("repMonthInput");
+      if (mInp) mInp.addEventListener("change", e => { reportMonth = e.target.value || currentMonthStr(); render(); });
+
+      const revForm = document.getElementById("revForm");
+      if (revForm) revForm.addEventListener("submit", e => {
+        e.preventDefault();
+        const fd = new FormData(revForm);
+        updateAndSync(s => {
+          s.revenues.push({
+            id: "r_" + Date.now(),
+            date: fd.get("date"),
+            channel: fd.get("channel"),
+            desc: fd.get("desc"),
+            partner: activePartner,
+            amount: Number(fd.get("amount")) || 0
+          });
+        });
+      });
+
+      document.querySelectorAll("[data-del-rev]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          updateAndSync(s => { s.revenues = s.revenues.filter(x => x.id !== btn.dataset.delRev); });
+        });
+      });
+
+      const expForm = document.getElementById("expForm");
+      if (expForm) expForm.addEventListener("submit", e => {
+        e.preventDefault();
+        const fd = new FormData(expForm);
+        updateAndSync(s => {
+          s.expenses.push({
+            id: "e_" + Date.now(),
+            date: fd.get("date"),
+            category: fd.get("category"),
+            desc: fd.get("desc"),
+            partner: activePartner,
+            amount: Number(fd.get("amount")) || 0
+          });
+        });
+      });
+
+      document.querySelectorAll("[data-del-exp]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          updateAndSync(s => { s.expenses = s.expenses.filter(x => x.id !== btn.dataset.delExp); });
+        });
+      });
+
+      const payForm = document.getElementById("payForm");
+      if (payForm) payForm.addEventListener("submit", e => {
+        e.preventDefault();
+        const fd = new FormData(payForm);
+        updateAndSync(s => {
+          s.scheduledPayments.push({
+            id: "p_" + Date.now(),
+            dueDate: fd.get("dueDate"),
+            category: fd.get("category"),
+            title: fd.get("title"),
+            partner: activePartner,
+            amount: Number(fd.get("amount")) || 0,
+            status: "Bekliyor"
+          });
+        });
+      });
+
+      document.querySelectorAll("[data-mark-paid]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          updateAndSync(s => {
+            const p = s.scheduledPayments.find(x => x.id === btn.dataset.markPaid);
+            if (p && p.status !== "Ödendi") {
+              p.status = "Ödendi";
+              s.expenses.push({
+                id: "e_" + Date.now(),
+                date: todayStr(),
+                category: p.category || "Diğer Giderler",
+                desc: "Planlı Ödeme: " + p.title,
+                partner: activePartner,
+                amount: Number(p.amount) || 0
+              });
+            }
+          });
+        });
+      });
+
+      document.querySelectorAll("[data-del-pay]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          updateAndSync(s => { s.scheduledPayments = s.scheduledPayments.filter(x => x.id !== btn.dataset.delPay); });
+        });
+      });
+
+      const capForm = document.getElementById("capForm");
+      if (capForm) capForm.addEventListener("submit", e => {
+        e.preventDefault();
+        const fd = new FormData(capForm);
+        const targetPartner = fd.get("partner");
+        const type = fd.get("type");
+        const desc = fd.get("desc");
+        const date = fd.get("date");
+        const rawAmt = Number(fd.get("amount")) || 0;
+        updateAndSync(s => {
+          if (targetPartner === "ALL_4") {
+            const share = rawAmt / 4;
+            s.partners.forEach((p, idx) => {
+              s.capitalMovements.push({
+                id: "c_" + Date.now() + "_" + idx,
+                date,
+                partner: p.id,
+                type,
+                desc: (desc || "4 Ortak Eşit İşlem") + " (4'e bölündü)",
+                amount: share
+              });
+            });
+          } else {
+            s.capitalMovements.push({
+              id: "c_" + Date.now(),
+              date,
+              partner: targetPartner,
+              type,
+              desc,
+              amount: rawAmt
+            });
+          }
+        });
+      });
+
+      document.querySelectorAll("[data-del-cap]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          updateAndSync(s => { s.capitalMovements = s.capitalMovements.filter(x => x.id !== btn.dataset.delCap); });
+        });
+      });
+
+      document.querySelectorAll(".p-edit").forEach(inp => {
+        inp.addEventListener("change", () => {
+          const idx = Number(inp.dataset.pIdx);
+          const field = inp.dataset.pField;
+          updateAndSync(s => {
+            s.partners[idx][field] = field === "initialInvestment" ? (Number(inp.value) || 0) : inp.value;
+          });
+        });
+      });
+
+      const saveCloudBtn = document.getElementById("saveCloudBtn");
+      if (saveCloudBtn) {
+        saveCloudBtn.addEventListener("click", () => {
+          const roomVal = (document.getElementById("roomIdInput")?.value || "sirket-odasi-01").trim();
+          const fbVal = (document.getElementById("fbJsonInput")?.value || "").trim();
+          state.cloudConfig.roomId = roomVal || "sirket-odasi-01";
+          state.cloudConfig.firebaseJson = fbVal;
+          saveLocal();
+          connectCloudListener();
+        });
+      }
+    }
+
+    window.addEventListener("firebase-sdk-ready", () => {
+      connectCloudListener();
+      render();
+    });
+
+    connectCloudListener();
+    render();
+  </script>
+</body>
+</html>
